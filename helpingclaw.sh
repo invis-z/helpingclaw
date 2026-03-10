@@ -76,7 +76,7 @@ require_cmd() {
 }
 
 export OPENCLAW_USER="${OPENCLAW_PODMAN_USER:-openclaw}"
-export OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:main}"
+export OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}"
 
 resolve_user_home() {
 	local user="$1"
