@@ -207,8 +207,8 @@ cmd_deploy() {
 	fi
 
 	info "Creating configuration directories at: $OPENCLAW_CONFIG"
-	run_as_openclaw mkdir -p "$OPENCLAW_CONFIG/workspace" "$OPENCLAW_HOME/.local/share/signal-cli"
-	run_as_openclaw chmod 700 "$OPENCLAW_CONFIG" "$OPENCLAW_CONFIG/workspace" "$OPENCLAW_HOME/.local/share/signal-cli" || true
+	run_as_openclaw mkdir -p "$OPENCLAW_CONFIG/workspace" "$OPENCLAW_HOME/data/local/share/signal-cli"
+	run_as_openclaw chmod 700 "$OPENCLAW_CONFIG" "$OPENCLAW_CONFIG/workspace" "$OPENCLAW_HOME/data/local/share/signal-cli" || true
 
 	ENV_FILE="$OPENCLAW_CONFIG/.env"
 	if run_as_openclaw test -f "$ENV_FILE"; then
@@ -254,7 +254,7 @@ ContainerName=openclaw
 UserNS=keep-id
 User=%U:%G
 Volume=$OPENCLAW_CONFIG:/home/node/.openclaw:Z
-Volume=$OPENCLAW_HOME/.local/share/signal-cli:/home/node/.local/share/signal-cli:Z
+Volume=$OPENCLAW_HOME/data/local/share/signal-cli:/home/node/.local/share/signal-cli:Z
 EnvironmentFile=$OPENCLAW_CONFIG/.env
 Environment=HOME=/home/node
 Environment=XDG_DATA_HOME=/home/node/.local/share
@@ -404,7 +404,7 @@ cmd_onboard() {
 		-e BROWSER=echo \
 		-e OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}" \
 		-v "$CONFIG_DIR:/home/node/.openclaw:rw${SELINUX_MOUNT_OPTS}" \
-		-v "$OPENCLAW_HOME/.local/share/signal-cli:/home/node/.local/share/signal-cli:rw${SELINUX_MOUNT_OPTS}" \
+		-v "$OPENCLAW_HOME/data/local/share/signal-cli:/home/node/.local/share/signal-cli:rw${SELINUX_MOUNT_OPTS}" \
 		"${ENV_FILE_ARGS[@]}" \
 		"$OPENCLAW_IMAGE" \
 		node dist/index.js onboard "$@"
