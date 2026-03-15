@@ -436,12 +436,37 @@ RemainAfterExit=yes
 WantedBy=default.target
 EOF
 
+	info "Writing sandbox image maintenance units (pull + prune) for $OPENCLAW_SANDBOX_USER..."
+	cat <<EOF | run_as_user "$OPENCLAW_SANDBOX_USER" tee "$SANDBOX_HOME/.config/systemd/user/openclaw-sandbox-image-maintenance.service" >/dev/null
+[Unit]
+Description=OpenClaw sandbox image maintenance (pull + prune)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -lc '/usr/bin/podman pull "$OPENCLAW_SANDBOX_DOCKER_IMAGE"; /usr/bin/podman image prune -f --filter dangling=true'
+EOF
+
+	cat <<'EOF' | run_as_user "$OPENCLAW_SANDBOX_USER" tee "$SANDBOX_HOME/.config/systemd/user/openclaw-sandbox-image-maintenance.timer" >/dev/null
+[Unit]
+Description=Run OpenClaw sandbox image maintenance daily at 09:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 UTC
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 	if command -v loginctl &>/dev/null; then run_root loginctl enable-linger "$OPENCLAW_SANDBOX_USER"; fi
 
 	info "Reloading sandbox user systemd manager and enabling socket services..."
 	run_root systemctl --machine="${OPENCLAW_SANDBOX_USER}@" --user daemon-reload
 	run_root systemctl --machine="${OPENCLAW_SANDBOX_USER}@" --user enable --now podman-runtime-dir-perms.service
 	run_root systemctl --machine="${OPENCLAW_SANDBOX_USER}@" --user enable --now podman.socket
+	run_root systemctl --machine="${OPENCLAW_SANDBOX_USER}@" --user enable --now openclaw-sandbox-image-maintenance.timer
+	run_root systemctl --machine="${OPENCLAW_SANDBOX_USER}@" --user start openclaw-sandbox-image-maintenance.service || true
 	info "Sandbox podman socket should be exposed at /run/user/$SANDBOX_UID/podman/podman.sock"
 
 	OPENCLAW_HOME="$(resolve_user_home "$OPENCLAW_USER")"
