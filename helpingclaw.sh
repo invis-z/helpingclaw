@@ -895,6 +895,13 @@ cmd_onboard() {
 		ENV_FILE_ARGS+=(--env-file "$ENV_FILE")
 	fi
 
+	INIT_ARGS=()
+	if command -v catatonit >/dev/null 2>&1; then
+		INIT_ARGS+=(--init)
+	else
+		warn "catatonit not found; continuing onboarding without --init."
+	fi
+
 	quadlet_container_values() {
 		local _key="$1"
 		local _file="$2"
@@ -957,7 +964,7 @@ cmd_onboard() {
 	fi
 
 	podman run --pull=newer --rm -it \
-		--init \
+		"${INIT_ARGS[@]}" \
 		"${VOLUME_ARGS[@]}" \
 		"${QUADLET_ENV_ARGS[@]}" \
 		-e OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}" \
