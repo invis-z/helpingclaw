@@ -310,6 +310,14 @@ EOF
 		run_root systemctl enable --now podman-network-wait-dummy.service
 	fi
 
+	if [[ -t 0 && -t 1 ]]; then
+		echo ""
+		read -r -p "Run setup-sandbox before starting openclaw.service? [y/N] " _run_setup_sandbox
+		if [[ "${_run_setup_sandbox:-}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+			cmd_setup_sandbox
+		fi
+	fi
+
 	info "Configuring and starting user systemd service 'openclaw.service'..."
 	run_root systemctl --machine="${OPENCLAW_USER}@" --user daemon-reload
 	run_root systemctl --machine="${OPENCLAW_USER}@" --user start openclaw.service
@@ -332,14 +340,6 @@ EOF
 		box_add_empty
 		box_add "${BOLD}$TOKEN${NC}"
 		box_render
-	fi
-
-	if [[ -t 0 && -t 1 ]]; then
-		echo ""
-		read -r -p "Run setup-sandbox now? [y/N] " _run_setup_sandbox
-		if [[ "${_run_setup_sandbox:-}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
-			cmd_setup_sandbox
-		fi
 	fi
 
 }
