@@ -1071,11 +1071,30 @@ cmd_enter() {
 		exit 1
 	fi
 
+	ENTER_ENV_ARGS=()
+	ENTER_JSON="$OPENCLAW_HOME/.openclaw/openclaw.json"
+	if [[ -f "$ENTER_JSON" ]]; then
+		if command -v jq >/dev/null 2>&1; then
+			_enter_token=""
+			if run_as_openclaw test -r "$ENTER_JSON" 2>/dev/null; then
+				_enter_token="$(run_as_openclaw jq -r '.gateway.auth.token // empty' "$ENTER_JSON" 2>/dev/null || true)"
+			else
+				_enter_token="$(run_root jq -r '.gateway.auth.token // empty' "$ENTER_JSON" 2>/dev/null || true)"
+			fi
+			if [[ -n "${_enter_token:-}" && "$_enter_token" != "null" ]]; then
+				ENTER_ENV_ARGS+=(--env "OPENCLAW_GATEWAY_TOKEN=$_enter_token")
+				info "Loaded OPENCLAW_GATEWAY_TOKEN from $ENTER_JSON for interactive shell."
+			fi
+		else
+			warn "jq not found; cannot extract OPENCLAW_GATEWAY_TOKEN from $ENTER_JSON."
+		fi
+	fi
+
 	info "Entering 'openclaw' as node user..."
 	if [[ "$(id -un)" == "$OPENCLAW_USER" ]]; then
-		podman exec -it openclaw bash
+		podman exec -it "${ENTER_ENV_ARGS[@]}" openclaw bash
 	else
-		run_as_openclaw podman exec -it openclaw bash
+		run_as_openclaw podman exec -it "${ENTER_ENV_ARGS[@]}" openclaw bash
 	fi
 }
 
