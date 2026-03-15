@@ -32,6 +32,9 @@ sudo ./helpingclaw.sh deploy
    - Mounts the OpenClaw config and Signal data directory.
    - Publishes ports `127.0.0.1:18789` and `127.0.0.1:18790` locally.
 5. Starts the `openclaw.service` user unit and enables the relevant lingering and auto-update timers.
+6. Computes the host UID/GID that map to container uid/gid `1000` from `/etc/subuid` and `/etc/subgid`, then applies ownership to:
+   - `~/.openclaw`
+   - `~/data/local/share/signal-cli`
 
 ---
 
@@ -55,8 +58,9 @@ sudo ./helpingclaw.sh setup-sandbox
 9. Rewrites `openclaw.container` to mount the sandbox proxy socket and workspace mapping:
    - Host proxy dir: `/run/openclaw-sandbox/podman`
    - In-container proxy socket: `/var/run/openclaw-sandbox/docker.sock`
-10. Installs/enables the system proxy service `openclaw-sandbox-socket-proxy.service` immediately.
-11. Reloads `openclaw` user systemd and restores `openclaw.service` if it was active before setup.
+10. Re-applies host ownership mapped from container uid/gid `1000` (derived from `/etc/subuid` + `/etc/subgid`) to `~/.openclaw` and `~/data/local/share/signal-cli` after config updates.
+11. Installs/enables the system proxy service `openclaw-sandbox-socket-proxy.service` immediately.
+12. Reloads `openclaw` user systemd and restores `openclaw.service` if it was active before setup.
 
 ### Sandbox configuration notes
 

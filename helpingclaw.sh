@@ -159,6 +159,33 @@ run_as_openclaw() {
 # ==========================================
 
 cmd_deploy() {
+	safe_tee_for_cuid() {
+		local _file="$1"
+		local _cuid="$2"
+		local _tee_args="$3"
+		local _data="$4"
+		if [[ -n "${_cuid:-}" && -f "$_file" && "$(stat -c '%u' "$_file" 2>/dev/null || echo '')" == "$_cuid" ]]; then
+			echo -n "$_data" | run_root tee $_tee_args "$_file" >/dev/null
+			# no chown if file exists
+		elif [[ -n "${_cuid:-}" && ! -f "$_file" ]]; then
+			echo -n "$_data" | run_root tee $_tee_args "$_file" >/dev/null
+			run_root chown $_cuid "$_file"
+		else
+			echo -n "$_data" | run_as_openclaw tee $_tee_args "$_file" >/dev/null
+		fi
+	}
+
+	safe_chmod_for_cuid() {
+		local _file="$1"
+		local _mode="$2"
+		local _cuid="$3"
+		local _owner_uid="$(stat -c '%u' "$_file" 2>/dev/null || echo '')"
+		if [[ -n "${_cuid:-}" && "$_owner_uid" == "$_cuid" ]]; then
+			run_root chmod "$_mode" "$_file"
+		else
+			run_as_openclaw chmod "$_mode" "$_file"
+		fi
+	}
 	require_cmd podman
 	require_cmd systemctl
 	if ! is_root; then require_cmd sudo; fi
@@ -219,32 +246,53 @@ cmd_deploy() {
 		warn "Consider running: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $OPENCLAW_USER"
 	fi
 
+	_oc_sub_uid_start="$(awk -F: -v u="$OPENCLAW_USER" '$1==u {print $2; exit}' /etc/subuid 2>/dev/null)"
+	_oc_sub_gid_start="$(awk -F: -v u="$OPENCLAW_USER" '$1==u {print $2; exit}' /etc/subgid 2>/dev/null)"
+	_c1000_host_uid=""
+	_c1000_host_gid=""
+	if [[ -n "${_oc_sub_uid_start:-}" && -n "${_oc_sub_gid_start:-}" ]]; then
+		_c1000_host_uid=$(( _oc_sub_uid_start + 999 ))
+		_c1000_host_gid=$(( _oc_sub_gid_start + 999 ))
+	fi
+
 	info "Creating configuration directories at: $OPENCLAW_CONFIG"
-	run_as_openclaw mkdir -p "$OPENCLAW_CONFIG/workspace" "$OPENCLAW_HOME/data/local/share/signal-cli"
-	run_as_openclaw chmod 700 "$OPENCLAW_CONFIG" "$OPENCLAW_CONFIG/workspace" "$OPENCLAW_HOME/data/local/share/signal-cli"
+	if [[ -n "${_c1000_host_uid:-}" && -n "${_c1000_host_gid:-}" ]] && command -v sudo >/dev/null 2>&1; then
+		run_root mkdir -p "$OPENCLAW_CONFIG" "$OPENCLAW_HOME/data/local/share/signal-cli"
+		run_root chown -R "${_c1000_host_uid}:${_c1000_host_gid}" "$OPENCLAW_CONFIG" "$OPENCLAW_HOME/data/local/share/signal-cli"
+		run_root chmod 700 "$OPENCLAW_CONFIG" "$OPENCLAW_HOME/data/local/share/signal-cli"
+		info "Created config dirs as root and assigned mapped uid/gid ${_c1000_host_uid}:${_c1000_host_gid}."
+	else
+		run_as_openclaw mkdir -p "$OPENCLAW_CONFIG" "$OPENCLAW_HOME/data/local/share/signal-cli"
+		run_as_openclaw chmod 700 "$OPENCLAW_CONFIG" "$OPENCLAW_HOME/data/local/share/signal-cli"
+	fi
 
 	ENV_FILE="$OPENCLAW_CONFIG/.env"
+	# Use helper for .env
 	if run_as_openclaw test -f "$ENV_FILE"; then
-		run_as_openclaw chmod 600 "$ENV_FILE"
+		safe_chmod_for_cuid "$ENV_FILE" 600 "${_c1000_host_uid:-}"
 		success "Found existing environment file: $ENV_FILE"
 		if ! run_as_openclaw grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$ENV_FILE" 2>/dev/null; then
 			TOKEN="$(generate_token_hex_32)"
-			printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$TOKEN" | run_as_openclaw tee -a "$ENV_FILE" >/dev/null
+			DATA=$(printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$TOKEN")
+			safe_tee_for_cuid "$ENV_FILE" "${_c1000_host_uid:-}" "-a" "$DATA"
 			success "Appended OPENCLAW_GATEWAY_TOKEN to $ENV_FILE."
 		else
 			success "Environment file $ENV_FILE already configures OPENCLAW_GATEWAY_TOKEN."
 		fi
 	else
 		TOKEN="$(generate_token_hex_32)"
-		printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$TOKEN" | run_as_openclaw tee "$ENV_FILE" >/dev/null
-		run_as_openclaw chmod 600 "$ENV_FILE"
+		DATA=$(printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$TOKEN")
+		safe_tee_for_cuid "$ENV_FILE" "${_c1000_host_uid:-}" "" "$DATA"
+		safe_chmod_for_cuid "$ENV_FILE" 600 "${_c1000_host_uid:-}"
 		success "Created environment file $ENV_FILE with new token."
 	fi
 
 	OPENCLAW_JSON="$OPENCLAW_CONFIG/openclaw.json"
+	# Use helper for openclaw.json
 	if ! run_as_openclaw test -f "$OPENCLAW_JSON"; then
-		printf '%s\n' '{"gateway":{"mode":"local"}}' | run_as_openclaw tee "$OPENCLAW_JSON" >/dev/null
-		run_as_openclaw chmod 600 "$OPENCLAW_JSON"
+		DATA=$(printf '%s\n' '{"gateway":{"mode":"local"}}')
+		safe_tee_for_cuid "$OPENCLAW_JSON" "${_c1000_host_uid:-}" "" "$DATA"
+		safe_chmod_for_cuid "$OPENCLAW_JSON" 600 "${_c1000_host_uid:-}"
 		success "Created default configuration: $OPENCLAW_JSON (minimal gateway.mode=local)."
 	else
 		success "Preserving existing configuration: $OPENCLAW_JSON"
@@ -264,9 +312,6 @@ After=podman-user-wait-network-online.service
 Image=$OPENCLAW_IMAGE
 AutoUpdate=registry
 ContainerName=openclaw
-UserNS=keep-id
-User=%U:%G
-GroupAdd=keep-groups
 Volume=$OPENCLAW_CONFIG:/home/node/.openclaw:Z
 Volume=$OPENCLAW_HOME/data/local/share/signal-cli:/home/node/.local/share/signal-cli:Z
 EnvironmentFile=$OPENCLAW_CONFIG/.env
@@ -289,6 +334,15 @@ EOF
 	run_as_openclaw chmod 700 "$OPENCLAW_HOME/.config" "$OPENCLAW_HOME/.config/containers" "$QUADLET_DIR"
 	run_as_openclaw chmod 600 "$QUADLET_DIR/openclaw.container"
 	success "Systemd Quadlet successfully written to $QUADLET_DIR/openclaw.container"
+
+	# Chown volume dirs to the host UID/GID that maps to container uid/gid 1000.
+	# Without UserNS=keep-id, Podman maps: host_uid = subuid_start + (container_uid - 1)
+	if [[ -n "${_oc_sub_uid_start:-}" && -n "${_oc_sub_gid_start:-}" ]]; then
+		run_root chown -R "${_c1000_host_uid}:${_c1000_host_gid}" "$OPENCLAW_CONFIG" "$OPENCLAW_HOME/data/local/share/signal-cli"
+		info "Volume dirs chowned to ${_c1000_host_uid}:${_c1000_host_gid} (subuid/subgid offset for container uid/gid 1000)."
+	else
+		warn "No subuid/subgid entry for $OPENCLAW_USER; volume ownership inside container may be incorrect."
+	fi
 
 	# Fix for Podman #24796: user-wait-network-online hangs if network-online.target isn't wanted by any system unit
 	_net_deps="$(systemctl list-dependencies network-online.target --reverse --no-pager 2>/dev/null | wc -l)"
@@ -493,7 +547,7 @@ EOF
 		run_root systemctl restart "user@${OPENCLAW_UID}.service"
 	fi
 
-	if ! run_as_openclaw test -f "$OPENCLAW_JSON"; then
+	if ! run_root test -f "$OPENCLAW_JSON"; then
 		err "OpenClaw configuration not found at: $OPENCLAW_JSON"
 		err "Please run 'sudo ./helpingclaw.sh deploy' first."
 		exit 1
@@ -537,8 +591,27 @@ EOF
 		fi
 		info "Resolved idmapped mount options: bind,X-mount.idmap=${_IDMAP_OPTS}"
 
+		_sandbox_c1000_host_uid=""
+		_sandbox_c1000_host_gid=""
+		if [[ -n "${_u1_subuid_entry:-}" ]]; then
+			_u1_subuid_start="${_u1_subuid_entry%%:*}"
+			_sandbox_c1000_host_uid=$(( _u1_subuid_start + 999 ))
+		fi
+		if [[ -n "${_u1_subgid_entry:-}" ]]; then
+			_u1_subgid_start="${_u1_subgid_entry%%:*}"
+			_sandbox_c1000_host_gid=$(( _u1_subgid_start + 999 ))
+		fi
+
 		run_as_user "$OPENCLAW_SANDBOX_USER" mkdir -p "$SANDBOX_WORKSPACE_SOURCE"
-		run_as_user "$OPENCLAW_SANDBOX_USER" chmod 700 "$SANDBOX_WORKSPACE_SOURCE"
+		if [[ -n "${_sandbox_c1000_host_uid:-}" && -n "${_sandbox_c1000_host_gid:-}" ]]; then
+			run_root chown "${_sandbox_c1000_host_uid}:${_sandbox_c1000_host_gid}" "$SANDBOX_WORKSPACE_SOURCE"
+			run_root chmod 700 "$SANDBOX_WORKSPACE_SOURCE"
+			info "Set $SANDBOX_WORKSPACE_SOURCE ownership to ${_sandbox_c1000_host_uid}:${_sandbox_c1000_host_gid} (sandbox container uid/gid 1000 mapping)."
+		elif ! run_as_user "$OPENCLAW_SANDBOX_USER" chmod 700 "$SANDBOX_WORKSPACE_SOURCE"; then
+			warn "Could not chmod $SANDBOX_WORKSPACE_SOURCE as $OPENCLAW_SANDBOX_USER. Repairing with root..."
+			run_root chown "$OPENCLAW_SANDBOX_USER:$OPENCLAW_SANDBOX_GROUP" "$SANDBOX_WORKSPACE_SOURCE"
+			run_root chmod 700 "$SANDBOX_WORKSPACE_SOURCE"
+		fi
 		run_root mkdir -p "$OPENCLAW_WORKSPACE_MOUNTPOINT"
 
 		cat <<EOF | run_root tee "/etc/systemd/system/$SANDBOX_WORKSPACE_MOUNT_UNIT" >/dev/null
@@ -573,28 +646,59 @@ EOF
 		tmp_file="$(mktemp)"
 		trap 'rm -f "$tmp_file"' RETURN
 		info "Updating sandbox configuration in $OPENCLAW_JSON"
-		run_as_openclaw jq --arg sandbox_workspace_root "$SANDBOX_WORKSPACE_ROOT" --arg sandbox_docker_image "$OPENCLAW_SANDBOX_DOCKER_IMAGE" '
+		run_root jq --arg sandbox_workspace_root "$SANDBOX_WORKSPACE_ROOT" --arg sandbox_docker_image "$OPENCLAW_SANDBOX_DOCKER_IMAGE" '
 			.gateway = (.gateway // {}) |
 			.gateway.mode = (.gateway.mode // "local") |
 			.agents = (.agents // {}) |
 			.agents.defaults = (.agents.defaults // {}) |
+			.agents.defaults.workspace = (
+				.agents.defaults.workspace as $existing_workspace |
+				if (($existing_workspace | type) == "string") and (
+					$existing_workspace == $sandbox_workspace_root or
+					($existing_workspace | startswith($sandbox_workspace_root + "/"))
+				) then
+					$existing_workspace
+				else
+					($sandbox_workspace_root + "/.openclaw/workspace")
+				end
+			) |
 			.agents.defaults.sandbox = (.agents.defaults.sandbox // {}) |
 			.agents.defaults.sandbox.mode = "all" |
 			.agents.defaults.sandbox.workspaceRoot = $sandbox_workspace_root |
 			.agents.defaults.sandbox.docker = (.agents.defaults.sandbox.docker // {}) |
 			.agents.defaults.sandbox.docker.image = $sandbox_docker_image
 		' "$OPENCLAW_JSON" > "$tmp_file"
-		run_as_openclaw tee "$OPENCLAW_JSON" >/dev/null < "$tmp_file"
+		run_root tee "$OPENCLAW_JSON" >/dev/null < "$tmp_file"
 		trap - RETURN
 		rm -f "$tmp_file"
 		success "Updated configuration: $OPENCLAW_JSON with sandbox enabled, workspaceRoot=$SANDBOX_WORKSPACE_ROOT, docker.image=$OPENCLAW_SANDBOX_DOCKER_IMAGE."
 	fi
 
+	# Re-apply container uid 1000 ownership on volume dirs after config updates.
+	# Compute the host UID/GID that maps to uid/gid 1000 inside the rootless container.
+	_oc_sub_uid_start="$(awk -F: -v u="$OPENCLAW_USER" '$1==u {print $2; exit}' /etc/subuid 2>/dev/null)"
+	_oc_sub_gid_start="$(awk -F: -v u="$OPENCLAW_USER" '$1==u {print $2; exit}' /etc/subgid 2>/dev/null)"
+	_c1000_host_uid=""
+	_c1000_host_gid=""
+	if [[ -n "${_oc_sub_uid_start:-}" && -n "${_oc_sub_gid_start:-}" ]]; then
+		_c1000_host_uid=$(( _oc_sub_uid_start + 999 ))
+		_c1000_host_gid=$(( _oc_sub_gid_start + 999 ))
+		run_root chown -R "${_c1000_host_uid}:${_c1000_host_gid}" "$OPENCLAW_CONFIG" "$OPENCLAW_HOME/data/local/share/signal-cli"
+		info "Re-applied volume ownership ${_c1000_host_uid}:${_c1000_host_gid} for container uid/gid 1000."
+	else
+		warn "No subuid/subgid entry for $OPENCLAW_USER; volume ownership inside container may be incorrect."
+	fi
+
 	info "Generating system sandbox socket proxy service..."
 	info "Preparing proxy runtime directory: $OPENCLAW_PROXY_DIR"
 	run_root mkdir -p "$OPENCLAW_PROXY_DIR"
-	run_root chown "$OPENCLAW_USER:$(id -gn "$OPENCLAW_USER" 2>/dev/null)" "$OPENCLAW_PROXY_DIR"
-	run_root chmod 0770 "$OPENCLAW_PROXY_DIR"
+	if [[ -n "${_c1000_host_uid:-}" && -n "${_c1000_host_gid:-}" ]]; then
+		run_root chown "${_c1000_host_uid}:${_c1000_host_gid}" "$OPENCLAW_PROXY_DIR"
+	else
+		run_root chown "$OPENCLAW_USER:$(id -gn "$OPENCLAW_USER" 2>/dev/null)" "$OPENCLAW_PROXY_DIR"
+		warn "Could not determine subuid/subgid for $OPENCLAW_USER; proxy dir ownership may be incorrect in container."
+	fi
+	run_root chmod 0775 "$OPENCLAW_PROXY_DIR"
 	if [[ "$_SELINUX_ACTIVE" -eq 1 ]]; then
 		info "SELinux active. Installing dedicated proxy policy and labels..."
 		run_root mkdir -p /etc/selinux/local
@@ -635,6 +739,10 @@ EOF
 	else
 		info "SELinux not active. Skipping semanage/restorecon/semodule steps."
 	fi
+	# Run the proxy as the host UID/GID that maps to container uid/gid 1000, so
+	# socat creates docker.sock with the correct ownership natively.
+	_proxy_user="${_c1000_host_uid:-$OPENCLAW_USER}"
+	_proxy_group="${_c1000_host_gid:-$(id -gn "$OPENCLAW_USER" 2>/dev/null)}"
 	_proxy_selinux_context_line=""
 	_proxy_restorecon_pre_line=""
 	if [[ "$_SELINUX_ACTIVE" -eq 1 ]]; then
@@ -654,11 +762,12 @@ User=$OPENCLAW_USER
 Group=$(id -gn "$OPENCLAW_USER" 2>/dev/null)
 $_proxy_selinux_context_line
 RuntimeDirectory=$OPENCLAW_PROXY_RUNTIME_DIR
-RuntimeDirectoryMode=0770
+RuntimeDirectoryMode=0775
 $_proxy_restorecon_pre_line
 ExecStartPre=/usr/bin/rm -f %t/$OPENCLAW_PROXY_RUNTIME_DIR/docker.sock
 ExecStartPre=/usr/bin/bash -c "for _ in {1..30}; do [[ -S /run/user/$SANDBOX_UID/podman/podman.sock ]] && exit 0; sleep 1; done; echo 'Timed out waiting for sandbox podman socket' >&2; exit 1"
 ExecStart=/usr/bin/socat -t 15 UNIX-LISTEN:%t/$OPENCLAW_PROXY_RUNTIME_DIR/docker.sock,reuseaddr,fork,mode=0660 UNIX-CONNECT:/run/user/$SANDBOX_UID/podman/podman.sock
+ExecStartPost=+/usr/bin/bash -c "for _ in {1..30}; do [[ -S %t/$OPENCLAW_PROXY_RUNTIME_DIR/docker.sock ]] && exec /usr/bin/chown ${_c1000_host_uid:-$OPENCLAW_USER}:${_c1000_host_gid:-$(id -gn "$OPENCLAW_USER" 2>/dev/null)} %t/$OPENCLAW_PROXY_RUNTIME_DIR/docker.sock; sleep 1; done; echo 'Timed out waiting for proxy docker.sock' >&2; exit 1"
 Restart=on-failure
 RestartSec=2
 
@@ -684,9 +793,6 @@ After=podman-user-wait-network-online.service
 Image=$OPENCLAW_IMAGE
 AutoUpdate=registry
 ContainerName=openclaw
-UserNS=keep-id
-User=%U:%G
-GroupAdd=keep-groups
 Volume=$OPENCLAW_CONFIG:/home/node/.openclaw:Z
 Volume=$OPENCLAW_HOME/data/local/share/signal-cli:/home/node/.local/share/signal-cli:Z
 Volume=$OPENCLAW_PROXY_DIR:/var/run/openclaw-sandbox:rw
@@ -852,8 +958,6 @@ cmd_onboard() {
 
 	podman run --pull=newer --rm -it \
 		--init \
-		--userns=keep-id \
-		--user "$(id -u):$(id -g)" \
 		"${VOLUME_ARGS[@]}" \
 		"${QUADLET_ENV_ARGS[@]}" \
 		-e OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}" \
@@ -902,16 +1006,17 @@ cmd_tailscale() {
 
 	success "Discovered Tailscale Domain: ${BOLD}${FULL_ORIGIN}${NC}"
 	info "Patching openclaw.json allowedOrigins configuration..."
-
-	run_as_openclaw bash -c "
-		tmp_file=\$(mktemp)
-		jq '
-			.gateway.controlUi.allowedOrigins = [\"$FULL_ORIGIN\"]
-		' \"$OPENCLAW_JSON\" > \"\$tmp_file\"
-		
-		mv \"\$tmp_file\" \"$OPENCLAW_JSON\"
-		chmod 600 \"$OPENCLAW_JSON\"
-	"
+	_JSON_OWNER_UID="$(stat -c '%u' "$OPENCLAW_JSON" 2>/dev/null || echo '')"
+	_JSON_OWNER_GID="$(stat -c '%g' "$OPENCLAW_JSON" 2>/dev/null || echo '')"
+	tmp_file="$(run_root mktemp "${OPENCLAW_JSON}.tmp.XXXXXX")"
+	trap 'run_root rm -f "$tmp_file"' RETURN
+	run_root jq --arg origin "$FULL_ORIGIN" '.gateway.controlUi.allowedOrigins = [$origin]' "$OPENCLAW_JSON" > "$tmp_file"
+	run_root chmod 600 "$tmp_file"
+	if [[ -n "${_JSON_OWNER_UID:-}" && -n "${_JSON_OWNER_GID:-}" ]]; then
+		run_root chown "${_JSON_OWNER_UID}:${_JSON_OWNER_GID}" "$tmp_file"
+	fi
+	run_root mv -f "$tmp_file" "$OPENCLAW_JSON"
+	trap - RETURN
 
 	success "Whitelisted '$FULL_ORIGIN' inside openclaw.json securely."
 	info "Restarting OpenClaw Gateway service to apply new security rules..."
