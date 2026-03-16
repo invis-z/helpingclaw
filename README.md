@@ -25,7 +25,7 @@ sudo ./helpingclaw.sh deploy
 **What the deploy command does:**
 1. Creates an isolated `openclaw` system user to securely run the rootless containers.
 2. Scaffolds configuration in `~/.openclaw`, including `openclaw.json`, `.env`, and the default workspace directory.
-3. Generates an `OPENCLAW_GATEWAY_TOKEN` in `~/.openclaw/.env` if one does not already exist.
+3. Keeps `~/.openclaw/.env` empty and stores the generated gateway token in `~/.openclaw/openclaw.json` at `gateway.auth.token`.
 4. Writes a user Quadlet at `~/.config/containers/systemd/openclaw.container` that:
    - Pulls and runs `ghcr.io/invis-z/lobster:latest` by default.
    - Enables registry-based auto-updates via `podman-auto-update.timer`.

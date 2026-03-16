@@ -267,35 +267,43 @@ cmd_deploy() {
 	fi
 
 	ENV_FILE="$OPENCLAW_CONFIG/.env"
-	# Use helper for .env
-	if run_as_openclaw test -f "$ENV_FILE"; then
-		safe_chmod_for_cuid "$ENV_FILE" 600 "${_c1000_host_uid:-}"
-		success "Found existing environment file: $ENV_FILE"
-		if ! run_as_openclaw grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$ENV_FILE" 2>/dev/null; then
-			TOKEN="$(generate_token_hex_32)"
-			DATA=$(printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$TOKEN")
-			safe_tee_for_cuid "$ENV_FILE" "${_c1000_host_uid:-}" "-a" "$DATA"
-			success "Appended OPENCLAW_GATEWAY_TOKEN to $ENV_FILE."
-		else
-			success "Environment file $ENV_FILE already configures OPENCLAW_GATEWAY_TOKEN."
-		fi
-	else
-		TOKEN="$(generate_token_hex_32)"
-		DATA=$(printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$TOKEN")
-		safe_tee_for_cuid "$ENV_FILE" "${_c1000_host_uid:-}" "" "$DATA"
-		safe_chmod_for_cuid "$ENV_FILE" 600 "${_c1000_host_uid:-}"
-		success "Created environment file $ENV_FILE with new token."
-	fi
+	# Keep .env intentionally empty for compatibility with EnvironmentFile in the quadlet.
+	DATA=""
+	safe_tee_for_cuid "$ENV_FILE" "${_c1000_host_uid:-}" "" "$DATA"
+	safe_chmod_for_cuid "$ENV_FILE" 600 "${_c1000_host_uid:-}"
+	success "Created empty environment file: $ENV_FILE"
 
 	OPENCLAW_JSON="$OPENCLAW_CONFIG/openclaw.json"
-	# Use helper for openclaw.json
+	# Store gateway auth token in openclaw.json instead of .env.
 	if ! run_as_openclaw test -f "$OPENCLAW_JSON"; then
-		DATA=$(printf '%s\n' '{"gateway":{"mode":"local"}}')
+		TOKEN="$(generate_token_hex_32)"
+		DATA=$(printf '%s\n' '{"gateway":{"mode":"local","auth":{"token":"'"$TOKEN"'"}}}')
 		safe_tee_for_cuid "$OPENCLAW_JSON" "${_c1000_host_uid:-}" "" "$DATA"
 		safe_chmod_for_cuid "$OPENCLAW_JSON" 600 "${_c1000_host_uid:-}"
-		success "Created default configuration: $OPENCLAW_JSON (minimal gateway.mode=local)."
+		success "Created default configuration: $OPENCLAW_JSON (gateway.mode=local + gateway.auth.token)."
 	else
-		success "Preserving existing configuration: $OPENCLAW_JSON"
+		if command -v jq >/dev/null 2>&1; then
+			_existing_json_token="$(run_root jq -r '.gateway.auth.token // empty' "$OPENCLAW_JSON" 2>/dev/null || true)"
+			if [[ -z "${_existing_json_token:-}" ]]; then
+				TOKEN="$(generate_token_hex_32)"
+				DATA="$(run_root jq --arg token "$TOKEN" '
+					.gateway = (.gateway // {}) |
+					.gateway.mode = (.gateway.mode // "local") |
+					.gateway.auth = (.gateway.auth // {}) |
+					.gateway.auth.token = $token
+				' "$OPENCLAW_JSON")"
+				DATA="${DATA}"$'\n'
+				safe_tee_for_cuid "$OPENCLAW_JSON" "${_c1000_host_uid:-}" "" "$DATA"
+				safe_chmod_for_cuid "$OPENCLAW_JSON" 600 "${_c1000_host_uid:-}"
+				success "Added missing gateway.auth.token to existing $OPENCLAW_JSON"
+			else
+				success "Preserving existing configuration and token in: $OPENCLAW_JSON"
+			fi
+		else
+			warn "jq not found; cannot verify gateway.auth.token in $OPENCLAW_JSON."
+			warn "Install jq to auto-manage token inside openclaw.json for existing deployments."
+			success "Preserving existing configuration: $OPENCLAW_JSON"
+		fi
 	fi
 
 	QUADLET_DIR="$OPENCLAW_HOME/.config/containers/systemd"
@@ -385,7 +393,7 @@ EOF
 	echo -e "${CYAN}■ Running version:${NC} $OPENCLAW_IMAGE"
 	echo -e "${CYAN}■ View Status:${NC}     sudo systemctl --machine=${OPENCLAW_USER}@ --user status openclaw.service"
 	echo -e "${CYAN}■ View Logs:${NC}       sudo -u ${OPENCLAW_USER} journalctl --user -fu openclaw.service"
-	echo -e "${CYAN}■ API Token File:${NC}  $ENV_FILE"
+	echo -e "${CYAN}■ API Token File:${NC}  $OPENCLAW_JSON (gateway.auth.token)"
 
 	if [[ -n "${TOKEN:-}" ]]; then
 		box_reset
@@ -1071,30 +1079,11 @@ cmd_enter() {
 		exit 1
 	fi
 
-	ENTER_ENV_ARGS=()
-	ENTER_JSON="$OPENCLAW_HOME/.openclaw/openclaw.json"
-	if [[ -f "$ENTER_JSON" ]]; then
-		if command -v jq >/dev/null 2>&1; then
-			_enter_token=""
-			if run_as_openclaw test -r "$ENTER_JSON" 2>/dev/null; then
-				_enter_token="$(run_as_openclaw jq -r '.gateway.auth.token // empty' "$ENTER_JSON" 2>/dev/null || true)"
-			else
-				_enter_token="$(run_root jq -r '.gateway.auth.token // empty' "$ENTER_JSON" 2>/dev/null || true)"
-			fi
-			if [[ -n "${_enter_token:-}" && "$_enter_token" != "null" ]]; then
-				ENTER_ENV_ARGS+=(--env "OPENCLAW_GATEWAY_TOKEN=$_enter_token")
-				info "Loaded OPENCLAW_GATEWAY_TOKEN from $ENTER_JSON for interactive shell."
-			fi
-		else
-			warn "jq not found; cannot extract OPENCLAW_GATEWAY_TOKEN from $ENTER_JSON."
-		fi
-	fi
-
 	info "Entering 'openclaw' as node user..."
 	if [[ "$(id -un)" == "$OPENCLAW_USER" ]]; then
-		podman exec -it "${ENTER_ENV_ARGS[@]}" openclaw bash
+		podman exec -it openclaw bash
 	else
-		run_as_openclaw podman exec -it "${ENTER_ENV_ARGS[@]}" openclaw bash
+		run_as_openclaw podman exec -it openclaw bash
 	fi
 }
 
