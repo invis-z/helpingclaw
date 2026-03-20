@@ -488,6 +488,7 @@ EOF
 [Unit]
 Description=Open sandbox runtime dir for group traversal
 Before=podman.socket
+DefaultDependencies=no
 
 [Service]
 Type=oneshot
